@@ -193,6 +193,10 @@ class VideoConference {
     }
 
     async createPeerConnection(targetSocketId) {
+        // PATCH: Reuse already created connection if present
+        if (this.peerConnections.has(targetSocketId)) {
+            return this.peerConnections.get(targetSocketId);
+        }
         try {
             const configuration = {
                 iceServers: [
