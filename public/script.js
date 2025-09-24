@@ -89,6 +89,10 @@ class VideoConference {
             this.localStream.getTracks().forEach(track => track.stop());
             this.localStream = null;
         }
+
+        // --- NEW: For chat users, still receive video feeds ---
+        this.startReceiveOnlyWebRTCConnections(data.videoUsers);
+        // --- END NEW ---
     }
 
     updateUI(data) {
