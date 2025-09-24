@@ -394,6 +394,12 @@ class VideoConference {
             .replace(/"/g, "&quot;")
             .replace(/'/g, "&#039;");
     }
+
+    updateUI(data) {
+        // Update the UI based on new state (animalName, isVideoUser, etc.)
+        // Placeholder to prevent errors if not yet implemented
+        console.log("UI updated:", data);
+    }
 }
 
 // Initialize the application when DOM is loaded
