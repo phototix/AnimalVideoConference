@@ -1,7 +1,7 @@
 // public/script.js
 class VideoConference {
     constructor() {
-        this.socket = io();
+        this.socket = io("https://videocall.brandon.my");
         this.localStream = null;
         this.isVideoUser = false;
         this.animalName = '';

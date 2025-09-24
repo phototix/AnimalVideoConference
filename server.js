@@ -1,11 +1,14 @@
-const express = require('express');
 const http = require('http');
-const socketIo = require('socket.io');
-const path = require('path');
-
+const express = require('express');
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
+const { Server } = require('socket.io');
+const io = new Server(server, {
+  cors: {
+    origin: "*", // Replace '*' with your frontend URL in production
+    methods: ["GET", "POST"]
+  }
+});
 
 const PORT = 4001;
 
