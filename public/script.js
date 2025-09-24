@@ -125,9 +125,19 @@ class VideoConference {
             }
         });
 
+        // --- NEW: Always re-link streams to remote video elements after adding them ---
+        videoUsers.forEach(user => {
+            if (user.id !== this.socket.id && this.remoteStreams.has(user.id)) {
+                const videoElement = document.getElementById(`video-${user.id}`);
+                if (videoElement) {
+                    videoElement.srcObject = this.remoteStreams.get(user.id);
+                }
+            }
+        });
+        // --- END NEW ---
+
         // Show video controls for video users
         document.getElementById('videoControls').style.display = this.isVideoUser ? 'block' : 'none';
-        
         // Adjust grid layout based on number of videos
         this.adjustVideoGridLayout(videoUsers.length + (this.isVideoUser ? 1 : 0));
     }
