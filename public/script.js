@@ -72,7 +72,16 @@ class VideoConference {
         this.isVideoUser = true;
         this.animalName = data.animalName;
         this.updateUI(data);
-        this.setupLocalVideo();
+        // Retry setupLocalVideo until tile is present in DOM
+        const setupSelfVideo = () => {
+            const videoElement = document.getElementById(`video-${this.socket.id}`);
+            if (videoElement) {
+                this.setupLocalVideo();
+            } else {
+                setTimeout(setupSelfVideo, 200);
+            }
+        };
+        setupSelfVideo();
         this.enableChat();
         this.startWebRTCConnections(data.videoUsers);
     }
@@ -83,131 +92,26 @@ class VideoConference {
         this.updateUI(data);
         this.enableChat();
         this.showChatOnlyMessage();
-        
         // Stop local stream if any
         if (this.localStream) {
             this.localStream.getTracks().forEach(track => track.stop());
             this.localStream = null;
         }
-
-        // --- NEW: For chat users, still receive video feeds ---
+        // Ensure chat-only users can receive video feeds:
         this.startReceiveOnlyWebRTCConnections(data.videoUsers);
-        // --- END NEW ---
     }
 
-    updateUI(data) {
-        document.getElementById('userAnimalName').textContent = this.animalName;
-        this.updateUserLists(data.videoUsers, data.chatUsers);
-        this.loadMessages(data.messages || []);
-    }
-
-    updateUserLists(videoUsers, chatUsers) {
-        const totalOnline = videoUsers.length + chatUsers.length;
-        document.getElementById('onlineCount').textContent = `Online: ${totalOnline}`;
-        document.getElementById('videoCount').textContent = `${videoUsers.length}/4`;
-        document.getElementById('chatCount').textContent = chatUsers.length;
-        
-        this.updateVideoGrid(videoUsers);
-    }
-
-    updateVideoGrid(videoUsers) {
-        const videoGrid = document.getElementById('videoGrid');
-        videoGrid.innerHTML = '';
-
-        // Add local video if user is video participant
-        if (this.isVideoUser) {
-            const localUser = { id: this.socket.id, name: this.animalName };
-            const videoTile = this.createVideoTile(localUser, true);
-            videoGrid.appendChild(videoTile);
-        }
-
-        // Add remote videos
-        videoUsers.forEach(user => {
-            if (user.id !== this.socket.id) {
-                const videoTile = this.createVideoTile(user, false);
-                videoGrid.appendChild(videoTile);
-            }
-        });
-
-        // --- NEW: Always re-link streams to remote video elements after adding them ---
-        videoUsers.forEach(user => {
-            if (user.id !== this.socket.id && this.remoteStreams.has(user.id)) {
-                const videoElement = document.getElementById(`video-${user.id}`);
-                if (videoElement) {
-                    videoElement.srcObject = this.remoteStreams.get(user.id);
-                }
-            }
-        });
-        // --- END NEW ---
-
-        // Show video controls for video users
-        document.getElementById('videoControls').style.display = this.isVideoUser ? 'block' : 'none';
-        // Adjust grid layout based on number of videos
-        this.adjustVideoGridLayout(videoUsers.length + (this.isVideoUser ? 1 : 0));
-    }
-
-    createVideoTile(user, isLocal) {
-        const col = document.createElement('div');
-        col.className = 'col-12 col-sm-6 col-lg-6';
-        
-        col.innerHTML = `
-            <div class="video-tile">
-                <video id="video-${user.id}" autoplay muted playsinline ${isLocal ? 'muted' : ''}></video>
-                <div class="video-label">
-                    <i class="fas fa-${isLocal ? 'user' : 'users'} me-1"></i>
-                    ${user.name} ${isLocal ? '(You)' : ''}
-                </div>
-            </div>
-        `;
-
-        // --- PATCH: Attach remote stream if available ---
-        if (!isLocal && this.remoteStreams.has(user.id)) {
-            const videoElement = col.querySelector(`#video-${user.id}`);
-            if (videoElement) {
-                videoElement.srcObject = this.remoteStreams.get(user.id);
-            }
-        }
-        // --- END PATCH ---
-        
-        return col;
-    }
-
-    adjustVideoGridLayout(videoCount) {
-        const videoGrid = document.getElementById('videoGrid');
-        const cols = videoGrid.querySelectorAll('.col-12');
-        
-        cols.forEach(col => {
-            if (videoCount === 1) {
-                col.className = 'col-12';
-            } else if (videoCount === 2) {
-                col.className = 'col-12 col-md-6';
-            } else if (videoCount >= 3) {
-                col.className = 'col-12 col-sm-6 col-lg-6';
-            }
-        });
-    }
-
-    setupLocalVideo() {
-        if (this.isVideoUser && this.localStream) {
-            const videoElement = document.getElementById(`video-${this.socket.id}`);
-            if (videoElement) {
-                videoElement.srcObject = this.localStream;
-            }
-        }
-    }
-
-    async startWebRTCConnections(videoUsers) {
-        if (!this.isVideoUser) return;
-
+    // NEW: For chat-only users, set up receive-only peer connections to all video users
+    async startReceiveOnlyWebRTCConnections(videoUsers) {
         for (const user of videoUsers) {
             if (user.id !== this.socket.id) {
-                await this.createPeerConnection(user.id);
+                await this.createPeerConnectionReceiveOnly(user.id);
             }
         }
     }
 
-    async createPeerConnection(targetSocketId) {
-        // PATCH: Reuse already created connection if present
+    // NEW: Create receive-only peer connection -- chat-only users do not send tracks
+    async createPeerConnectionReceiveOnly(targetSocketId) {
         if (this.peerConnections.has(targetSocketId)) {
             return this.peerConnections.get(targetSocketId);
         }
@@ -217,35 +121,24 @@ class VideoConference {
                     { urls: 'stun:stun.l.google.com:19302' }
                 ]
             };
-
             const peerConnection = new RTCPeerConnection(configuration);
             this.peerConnections.set(targetSocketId, peerConnection);
 
-            // Add local stream tracks
-            if (this.localStream) {
-                this.localStream.getTracks().forEach(track => {
-                    peerConnection.addTrack(track, this.localStream);
-                });
-            }
-
-            // Handle remote stream
+            // Only set up remote stream handler
             peerConnection.ontrack = (event) => {
                 const remoteStream = event.streams[0];
                 this.remoteStreams.set(targetSocketId, remoteStream);
-                // PATCH: always attach stream when <video> is available, retry if not yet in DOM
                 const attachStream = () => {
                     const videoElement = document.getElementById(`video-${targetSocketId}`);
                     if (videoElement) {
                         videoElement.srcObject = remoteStream;
                     } else {
-                        // Try again after a short delay
                         setTimeout(attachStream, 500);
                     }
                 };
                 attachStream();
             };
-
-            // Handle ICE candidates
+            // ICE candidates
             peerConnection.onicecandidate = (event) => {
                 if (event.candidate) {
                     this.socket.emit('ice-candidate', {
@@ -255,17 +148,76 @@ class VideoConference {
                 }
             };
 
-            // Create and send offer if we're initiating
-            if (targetSocketId > this.socket.id) { // Simple way to determine who offers
+            // Always, joining user sends offer to all other video users and chat users (for receive-only too)
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            this.socket.emit('offer', {
+                target: targetSocketId,
+                offer: offer
+            });
+        } catch (error) {
+            console.error('Error creating receive-only peer connection:', error);
+        }
+    }
+
+    // Fix offer/answer logic: joining user sends offer, not by socketId comparison
+    async startWebRTCConnections(videoUsers) {
+        if (!this.isVideoUser) return;
+        for (const user of videoUsers) {
+            if (user.id !== this.socket.id) {
+                // As joining user, always send offer to everyone else
+                await this.createPeerConnection(user.id, true);
+            }
+        }
+    }
+
+    // Update: createPeerConnection takes asOfferInitiator flag (default false)
+    async createPeerConnection(targetSocketId, asOfferInitiator = false) {
+        if (this.peerConnections.has(targetSocketId)) {
+            return this.peerConnections.get(targetSocketId);
+        }
+        try {
+            const configuration = {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' }
+                ]
+            };
+            const peerConnection = new RTCPeerConnection(configuration);
+            this.peerConnections.set(targetSocketId, peerConnection);
+            if (this.localStream) {
+                this.localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, this.localStream);
+                });
+            }
+            peerConnection.ontrack = (event) => {
+                const remoteStream = event.streams[0];
+                this.remoteStreams.set(targetSocketId, remoteStream);
+                const attachStream = () => {
+                    const videoElement = document.getElementById(`video-${targetSocketId}`);
+                    if (videoElement) {
+                        videoElement.srcObject = remoteStream;
+                    } else {
+                        setTimeout(attachStream, 500);
+                    }
+                };
+                attachStream();
+            };
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    this.socket.emit('ice-candidate', {
+                        target: targetSocketId,
+                        candidate: event.candidate
+                    });
+                }
+            };
+            if (asOfferInitiator) {
                 const offer = await peerConnection.createOffer();
                 await peerConnection.setLocalDescription(offer);
-                
                 this.socket.emit('offer', {
                     target: targetSocketId,
                     offer: offer
                 });
             }
-
         } catch (error) {
             console.error('Error creating peer connection:', error);
         }
