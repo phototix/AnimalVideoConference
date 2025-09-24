@@ -104,6 +104,15 @@ class VideoConference {
         document.getElementById('chatCount').textContent = chatUsers.length;
         
         this.updateVideoGrid(videoUsers);
+        // --- Patch: Always (re-)attach local video after grid update ---
+        this.setupLocalVideo();
+        // --- Patch: Always re-attach any remote streams after grid update ---
+        for (const [id, stream] of this.remoteStreams) {
+            const videoElement = document.getElementById(`video-${id}`);
+            if (videoElement && videoElement.srcObject !== stream) {
+                videoElement.srcObject = stream;
+            }
+        }
     }
 
     updateVideoGrid(videoUsers) {
