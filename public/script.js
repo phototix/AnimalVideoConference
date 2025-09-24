@@ -1,0 +1,422 @@
+// public/script.js
+class VideoConference {
+    constructor() {
+        this.socket = io();
+        this.localStream = null;
+        this.isVideoUser = false;
+        this.animalName = '';
+        this.roomId = '';
+        this.peerConnections = new Map();
+        this.remoteStreams = new Map();
+        
+        this.initializeEventListeners();
+        this.showJoinModal();
+    }
+
+    initializeEventListeners() {
+        // Join room
+        document.getElementById('joinRoom').addEventListener('click', () => this.joinRoom());
+        
+        // Send message
+        document.getElementById('sendMessage').addEventListener('click', () => this.sendMessage());
+        document.getElementById('messageInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') this.sendMessage();
+        });
+        
+        // Leave call
+        document.getElementById('leaveCall').addEventListener('click', () => this.leaveCall());
+        
+        // Socket events
+        this.socket.on('joined-as-video', (data) => this.handleJoinedAsVideo(data));
+        this.socket.on('joined-as-chat', (data) => this.handleJoinedAsChat(data));
+        this.socket.on('user-joined-video', (data) => this.handleUserJoinedVideo(data));
+        this.socket.on('user-joined-chat', (data) => this.handleUserJoinedChat(data));
+        this.socket.on('user-left-video', (data) => this.handleUserLeftVideo(data));
+        this.socket.on('user-left-chat', (data) => this.handleUserLeftChat(data));
+        this.socket.on('new-message', (data) => this.handleNewMessage(data));
+        this.socket.on('room-full', () => this.handleRoomFull());
+        
+        // WebRTC signaling events
+        this.socket.on('offer', (data) => this.handleOffer(data));
+        this.socket.on('answer', (data) => this.handleAnswer(data));
+        this.socket.on('ice-candidate', (data) => this.handleIceCandidate(data));
+    }
+
+    showJoinModal() {
+        const modal = new bootstrap.Modal(document.getElementById('joinModal'));
+        modal.show();
+    }
+
+    async joinRoom() {
+        this.roomId = document.getElementById('roomId').value.trim() || 'default-room';
+        
+        try {
+            this.localStream = await navigator.mediaDevices.getUserMedia({
+                video: { width: 640, height: 480 },
+                audio: true
+            });
+            
+            this.socket.emit('join-room', this.roomId);
+            bootstrap.Modal.getInstance(document.getElementById('joinModal')).hide();
+            
+        } catch (error) {
+            console.error('Error accessing media devices:', error);
+            alert('Error accessing camera/microphone. Please check permissions. You can still join as chat-only.');
+            // Join as chat-only if media access fails
+            this.socket.emit('join-room', this.roomId);
+            bootstrap.Modal.getInstance(document.getElementById('joinModal')).hide();
+        }
+    }
+
+    handleJoinedAsVideo(data) {
+        this.isVideoUser = true;
+        this.animalName = data.animalName;
+        this.updateUI(data);
+        this.setupLocalVideo();
+        this.enableChat();
+        this.startWebRTCConnections(data.videoUsers);
+    }
+
+    handleJoinedAsChat(data) {
+        this.isVideoUser = false;
+        this.animalName = data.animalName;
+        this.updateUI(data);
+        this.enableChat();
+        this.showChatOnlyMessage();
+        
+        // Stop local stream if any
+        if (this.localStream) {
+            this.localStream.getTracks().forEach(track => track.stop());
+            this.localStream = null;
+        }
+    }
+
+    updateUI(data) {
+        document.getElementById('userAnimalName').textContent = this.animalName;
+        this.updateUserLists(data.videoUsers, data.chatUsers);
+        this.loadMessages(data.messages || []);
+    }
+
+    updateUserLists(videoUsers, chatUsers) {
+        const totalOnline = videoUsers.length + chatUsers.length;
+        document.getElementById('onlineCount').textContent = `Online: ${totalOnline}`;
+        document.getElementById('videoCount').textContent = `${videoUsers.length}/4`;
+        document.getElementById('chatCount').textContent = chatUsers.length;
+        
+        this.updateVideoGrid(videoUsers);
+    }
+
+    updateVideoGrid(videoUsers) {
+        const videoGrid = document.getElementById('videoGrid');
+        videoGrid.innerHTML = '';
+
+        // Add local video if user is video participant
+        if (this.isVideoUser) {
+            const localUser = { id: this.socket.id, name: this.animalName };
+            const videoTile = this.createVideoTile(localUser, true);
+            videoGrid.appendChild(videoTile);
+        }
+
+        // Add remote videos
+        videoUsers.forEach(user => {
+            if (user.id !== this.socket.id) {
+                const videoTile = this.createVideoTile(user, false);
+                videoGrid.appendChild(videoTile);
+            }
+        });
+
+        // Show video controls for video users
+        document.getElementById('videoControls').style.display = this.isVideoUser ? 'block' : 'none';
+        
+        // Adjust grid layout based on number of videos
+        this.adjustVideoGridLayout(videoUsers.length + (this.isVideoUser ? 1 : 0));
+    }
+
+    createVideoTile(user, isLocal) {
+        const col = document.createElement('div');
+        col.className = 'col-12 col-sm-6 col-lg-6';
+        
+        col.innerHTML = `
+            <div class="video-tile">
+                <video id="video-${user.id}" autoplay muted playsinline ${isLocal ? 'muted' : ''}></video>
+                <div class="video-label">
+                    <i class="fas fa-${isLocal ? 'user' : 'users'} me-1"></i>
+                    ${user.name} ${isLocal ? '(You)' : ''}
+                </div>
+            </div>
+        `;
+        
+        return col;
+    }
+
+    adjustVideoGridLayout(videoCount) {
+        const videoGrid = document.getElementById('videoGrid');
+        const cols = videoGrid.querySelectorAll('.col-12');
+        
+        cols.forEach(col => {
+            if (videoCount === 1) {
+                col.className = 'col-12';
+            } else if (videoCount === 2) {
+                col.className = 'col-12 col-md-6';
+            } else if (videoCount >= 3) {
+                col.className = 'col-12 col-sm-6 col-lg-6';
+            }
+        });
+    }
+
+    setupLocalVideo() {
+        if (this.isVideoUser && this.localStream) {
+            const videoElement = document.getElementById(`video-${this.socket.id}`);
+            if (videoElement) {
+                videoElement.srcObject = this.localStream;
+            }
+        }
+    }
+
+    async startWebRTCConnections(videoUsers) {
+        if (!this.isVideoUser) return;
+
+        for (const user of videoUsers) {
+            if (user.id !== this.socket.id) {
+                await this.createPeerConnection(user.id);
+            }
+        }
+    }
+
+    async createPeerConnection(targetSocketId) {
+        try {
+            const configuration = {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' }
+                ]
+            };
+
+            const peerConnection = new RTCPeerConnection(configuration);
+            this.peerConnections.set(targetSocketId, peerConnection);
+
+            // Add local stream tracks
+            if (this.localStream) {
+                this.localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, this.localStream);
+                });
+            }
+
+            // Handle remote stream
+            peerConnection.ontrack = (event) => {
+                const remoteStream = event.streams[0];
+                this.remoteStreams.set(targetSocketId, remoteStream);
+                
+                const videoElement = document.getElementById(`video-${targetSocketId}`);
+                if (videoElement) {
+                    videoElement.srcObject = remoteStream;
+                }
+            };
+
+            // Handle ICE candidates
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    this.socket.emit('ice-candidate', {
+                        target: targetSocketId,
+                        candidate: event.candidate
+                    });
+                }
+            };
+
+            // Create and send offer if we're initiating
+            if (targetSocketId > this.socket.id) { // Simple way to determine who offers
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                
+                this.socket.emit('offer', {
+                    target: targetSocketId,
+                    offer: offer
+                });
+            }
+
+        } catch (error) {
+            console.error('Error creating peer connection:', error);
+        }
+    }
+
+    async handleOffer(data) {
+        try {
+            const peerConnection = await this.createPeerConnection(data.from);
+            await peerConnection.setRemoteDescription(data.offer);
+            
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            
+            this.socket.emit('answer', {
+                target: data.from,
+                answer: answer
+            });
+        } catch (error) {
+            console.error('Error handling offer:', error);
+        }
+    }
+
+    async handleAnswer(data) {
+        try {
+            const peerConnection = this.peerConnections.get(data.from);
+            if (peerConnection) {
+                await peerConnection.setRemoteDescription(data.answer);
+            }
+        } catch (error) {
+            console.error('Error handling answer:', error);
+        }
+    }
+
+    async handleIceCandidate(data) {
+        try {
+            const peerConnection = this.peerConnections.get(data.from);
+            if (peerConnection) {
+                await peerConnection.addIceCandidate(data.candidate);
+            }
+        } catch (error) {
+            console.error('Error handling ICE candidate:', error);
+        }
+    }
+
+    enableChat() {
+        document.getElementById('messageInput').disabled = false;
+        document.getElementById('sendMessage').disabled = false;
+        document.getElementById('messageInput').focus();
+    }
+
+    showChatOnlyMessage() {
+        this.addMessage({
+            animalName: 'System',
+            message: 'You have joined as a chat-only participant. Video slots are full.',
+            timestamp: new Date().toLocaleTimeString()
+        }, true);
+    }
+
+    sendMessage() {
+        const messageInput = document.getElementById('messageInput');
+        const message = messageInput.value.trim();
+        
+        if (message) {
+            this.socket.emit('send-message', message);
+            messageInput.value = '';
+        }
+    }
+
+    handleNewMessage(data) {
+        const isOwnMessage = data.animalName === this.animalName;
+        this.addMessage(data, isOwnMessage);
+    }
+
+    addMessage(data, isOwnMessage) {
+        const chatMessages = document.getElementById('chatMessages');
+        const messageDiv = document.createElement('div');
+        
+        messageDiv.className = `chat-message ${isOwnMessage ? 'message-own' : 'message-other'}`;
+        messageDiv.innerHTML = `
+            <div class="message-header">${data.animalName}</div>
+            <div>${this.escapeHtml(data.message)}</div>
+            <div class="message-time">${data.timestamp}</div>
+        `;
+        
+        chatMessages.appendChild(messageDiv);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    loadMessages(messages) {
+        const chatMessages = document.getElementById('chatMessages');
+        chatMessages.innerHTML = '';
+        
+        messages.forEach(message => {
+            const isOwnMessage = message.animalName === this.animalName;
+            this.addMessage(message, isOwnMessage);
+        });
+    }
+
+    handleUserJoinedVideo(data) {
+        this.updateUserLists(data.videoUsers, data.chatUsers);
+        
+        if (this.isVideoUser) {
+            this.createPeerConnection(data.id);
+        }
+        
+        this.addSystemMessage(`${data.animalName} joined the video call`);
+    }
+
+    handleUserJoinedChat(data) {
+        this.updateUserLists(data.videoUsers, data.chatUsers);
+        this.addSystemMessage(`${data.animalName} joined the chat`);
+    }
+
+    handleUserLeftVideo(data) {
+        this.updateUserLists(data.videoUsers, data.chatUsers);
+        this.cleanupPeerConnection(data.id);
+        this.addSystemMessage(`${data.animalName} left the video call`);
+    }
+
+    handleUserLeftChat(data) {
+        this.updateUserLists(data.videoUsers, data.chatUsers);
+        this.addSystemMessage(`${data.animalName} left the chat`);
+    }
+
+    cleanupPeerConnection(socketId) {
+        const peerConnection = this.peerConnections.get(socketId);
+        if (peerConnection) {
+            peerConnection.close();
+            this.peerConnections.delete(socketId);
+        }
+        this.remoteStreams.delete(socketId);
+        
+        // Remove video element
+        const videoElement = document.getElementById(`video-${socketId}`);
+        if (videoElement) {
+            videoElement.remove();
+        }
+    }
+
+    addSystemMessage(message) {
+        this.addMessage({
+            animalName: 'System',
+            message: message,
+            timestamp: new Date().toLocaleTimeString()
+        }, false);
+    }
+
+    handleRoomFull() {
+        alert('Room is full! Please try another room.');
+        this.showJoinModal();
+    }
+
+    leaveCall() {
+        if (this.isVideoUser && this.localStream) {
+            this.localStream.getTracks().forEach(track => track.stop());
+        }
+        
+        // Clean up all peer connections
+        this.peerConnections.forEach((pc, socketId) => {
+            pc.close();
+        });
+        this.peerConnections.clear();
+        this.remoteStreams.clear();
+        
+        this.socket.disconnect();
+        window.location.reload();
+    }
+
+    escapeHtml(unsafe) {
+        return unsafe
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+}
+
+// Initialize the application when DOM is loaded
+document.addEventListener('DOMContentLoaded', () => {
+    new VideoConference();
+});
+
+// Handle page refresh/close
+window.addEventListener('beforeunload', () => {
+    // Socket.io will handle disconnection automatically
+});
