@@ -104,6 +104,32 @@ io.on('connection', (socket) => {
         io.to(roomId).emit('new-message', messageData);
     });
 
+    // --- PATCH: WebRTC signaling relay handlers ---
+    socket.on('offer', (data) => {
+        // data: { target, offer }
+        io.to(data.target).emit('offer', {
+            from: socket.id,
+            offer: data.offer
+        });
+    });
+
+    socket.on('answer', (data) => {
+        // data: { target, answer }
+        io.to(data.target).emit('answer', {
+            from: socket.id,
+            answer: data.answer
+        });
+    });
+
+    socket.on('ice-candidate', (data) => {
+        // data: { target, candidate }
+        io.to(data.target).emit('ice-candidate', {
+            from: socket.id,
+            candidate: data.candidate
+        });
+    });
+    // --- END PATCH ---
+
     socket.on('disconnect', () => {
         const roomId = socket.roomId;
         if (!roomId || !rooms.has(roomId)) return;
