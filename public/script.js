@@ -145,6 +145,15 @@ class VideoConference {
                 </div>
             </div>
         `;
+
+        // --- PATCH: Attach remote stream if available ---
+        if (!isLocal && this.remoteStreams.has(user.id)) {
+            const videoElement = col.querySelector(`#video-${user.id}`);
+            if (videoElement) {
+                videoElement.srcObject = this.remoteStreams.get(user.id);
+            }
+        }
+        // --- END PATCH ---
         
         return col;
     }
@@ -205,11 +214,17 @@ class VideoConference {
             peerConnection.ontrack = (event) => {
                 const remoteStream = event.streams[0];
                 this.remoteStreams.set(targetSocketId, remoteStream);
-                
-                const videoElement = document.getElementById(`video-${targetSocketId}`);
-                if (videoElement) {
-                    videoElement.srcObject = remoteStream;
-                }
+                // PATCH: always attach stream when <video> is available, retry if not yet in DOM
+                const attachStream = () => {
+                    const videoElement = document.getElementById(`video-${targetSocketId}`);
+                    if (videoElement) {
+                        videoElement.srcObject = remoteStream;
+                    } else {
+                        // Try again after a short delay
+                        setTimeout(attachStream, 500);
+                    }
+                };
+                attachStream();
             };
 
             // Handle ICE candidates
